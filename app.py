@@ -705,7 +705,7 @@ if submitted:
 {민원_원문}
 """
                 model = genai.GenerativeModel(
-                    model_name="gemini-3.8-flash",
+                    model_name="gemini-2.5-flash",
                     system_instruction=SYSTEM_PROMPT,
                 )
                 response = model.generate_content(user_prompt)
