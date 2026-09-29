@@ -1,7 +1,8 @@
 """
-🌸 나유경 춘천시의원 AI 보좌관 (v6)
+🌸 나유경 춘천시의원 AI 보좌관 (v7)
 - 더불어민주당 파랑 + 의원님 사진
 - Gemini 3.8-flash + 텔레그램 자동 전송
+- Google Sheets 민원 이력 저장 ⭐ NEW
 - Civic Atelier 스타일
 """
 import os
@@ -13,6 +14,7 @@ import streamlit as st
 import google.generativeai as genai
 from dotenv import load_dotenv
 import telegram_sender
+import sheets_saver
 
 # ═══════════════════════════════════════════════════
 # 1) 페이지 설정
@@ -37,9 +39,7 @@ st.markdown("""
         word-break: keep-all;
     }
 
-    .stApp {
-        background: #f6f7f3;
-    }
+    .stApp { background: #f6f7f3; }
 
     .main .block-container {
         max-width: 1360px;
@@ -47,7 +47,7 @@ st.markdown("""
         padding-bottom: 4rem;
     }
 
-    /* ── 🎯 히어로 헤더 (민주당 파랑 + 사진) ── */
+    /* ── 🎯 히어로 헤더 ── */
     .civic-hero {
         position: relative;
         isolation: isolate;
@@ -80,9 +80,7 @@ st.markdown("""
         min-height: 340px;
     }
 
-    .civic-hero-copy {
-        padding-bottom: 40px;
-    }
+    .civic-hero-copy { padding-bottom: 40px; }
 
     .civic-hero-visual {
         display: flex;
@@ -329,7 +327,7 @@ st.markdown("""
         color: #1b2c32 !important;
     }
 
-    /* ── 제출 버튼 (민주당 파랑) ── */
+    /* ── 제출 버튼 ── */
     .stFormSubmitButton > button {
         background: linear-gradient(135deg, #0047A0 0%, #1560BC 100%) !important;
         color: #ffffff !important;
@@ -432,6 +430,18 @@ st.markdown("""
         margin-bottom: 1rem;
     }
 
+    /* ── 시트 저장 상태 ── */
+    .civic-sheet-ok {
+        background: linear-gradient(135deg, #e8eef4, #d4e2ec);
+        border: 1px solid #a9c1d4;
+        border-radius: 14px;
+        padding: 14px 20px;
+        color: #2d4d6b;
+        font-size: 13px;
+        font-weight: 600;
+        margin-bottom: 1rem;
+    }
+
     /* ── 편지지 스타일 ── */
     .civic-letter {
         background: #ffffff;
@@ -511,26 +521,11 @@ st.markdown("""
 
     /* ── 반응형 ── */
     @media (max-width: 820px) {
-        .civic-hero {
-            padding: 40px 28px 0;
-            border-radius: 24px;
-        }
-        .civic-hero h1 {
-            font-size: 42px;
-        }
-        .civic-hero-inner {
-            grid-template-columns: 1fr;
-            gap: 20px;
-            text-align: center;
-        }
-        .civic-hero-copy {
-            padding-bottom: 20px;
-        }
-        .civic-photo-wrap {
-            width: 200px;
-            height: 250px;
-            margin-inline: auto;
-        }
+        .civic-hero { padding: 40px 28px 0; border-radius: 24px; }
+        .civic-hero h1 { font-size: 42px; }
+        .civic-hero-inner { grid-template-columns: 1fr; gap: 20px; text-align: center; }
+        .civic-hero-copy { padding-bottom: 20px; }
+        .civic-photo-wrap { width: 200px; height: 250px; margin-inline: auto; }
         .civic-hero-steps {
             grid-template-columns: 1fr;
             gap: 14px;
@@ -543,12 +538,8 @@ st.markdown("""
             padding-left: 0;
             padding-top: 14px;
         }
-        .civic-section-head h2 {
-            font-size: 26px;
-        }
-        .main .block-container {
-            padding-inline: 1rem;
-        }
+        .civic-section-head h2 { font-size: 26px; }
+        .main .block-container { padding-inline: 1rem; }
     }
 </style>
 """, unsafe_allow_html=True)
@@ -559,8 +550,15 @@ st.markdown("""
 load_dotenv()
 API_KEY = os.getenv("GEMINI_API_KEY", "").strip()
 
+# Streamlit Secrets도 시도
 if not API_KEY:
-    st.error("⚠️ .env 파일에 GEMINI_API_KEY를 설정해주세요.")
+    try:
+        API_KEY = st.secrets.get("GEMINI_API_KEY", "").strip()
+    except Exception:
+        pass
+
+if not API_KEY:
+    st.error("⚠️ GEMINI_API_KEY를 설정해주세요. (.env 또는 Streamlit Secrets)")
     st.stop()
 
 genai.configure(api_key=API_KEY)
@@ -588,7 +586,7 @@ SYSTEM_PROMPT = """너는 춘천시의회에서 20년 동안 근무한 '베테�
 """
 
 # ═══════════════════════════════════════════════════
-# 5) 🎯 히어로 헤더 (민주당 파랑 + 의원 사진)
+# 5) 🎯 히어로 헤더
 # ═══════════════════════════════════════════════════
 def get_photo_base64():
     for ext in ['.png', '.jpg', '.jpeg']:
@@ -741,10 +739,26 @@ if submitted:
 ━━━━━━━━━━━━━━━━━━━━
 ⏰ 접수 시각: {datetime.now().strftime('%Y-%m-%d %H:%M')}
 """
+                # ─── 텔레그램 전송 ───
                 ok, tg_msg = telegram_sender.send_to_me(telegram_msg)
 
                 st.session_state.telegram_sent = ok
                 st.session_state.telegram_msg = "📱 의원님께 텔레그램 전송 완료!" if ok else tg_msg
+
+                # ─── 📊 Google Sheets 저장 ───
+                try:
+                    sheet_ok, sheet_msg = sheets_saver.save_to_sheet(
+                        name=이름,
+                        contact=연락처,
+                        content=민원_원문,
+                        staff_report=staff,
+                        telegram_sent=ok,
+                    )
+                    st.session_state.sheet_sent = sheet_ok
+                    st.session_state.sheet_msg = sheet_msg
+                except Exception as sheet_e:
+                    st.session_state.sheet_sent = False
+                    st.session_state.sheet_msg = f"시트 저장 실패: {sheet_e}"
 
             except Exception as e:
                 st.error(f"❌ 분석 실패: {e}")
@@ -764,6 +778,7 @@ if "citizen" in st.session_state:
     </div>
     """, unsafe_allow_html=True)
 
+    # 텔레그램 상태
     if st.session_state.get("telegram_sent"):
         st.markdown(f"""
         <div class="civic-telegram-ok">
@@ -772,6 +787,16 @@ if "citizen" in st.session_state:
         """, unsafe_allow_html=True)
     else:
         st.warning(f"⚠️ {st.session_state.get('telegram_msg', '전송 실패')}")
+
+    # 스프레드시트 저장 상태 (NEW)
+    if st.session_state.get("sheet_sent"):
+        st.markdown(f"""
+        <div class="civic-sheet-ok">
+            📊 {st.session_state.get('sheet_msg', '스프레드시트 저장 완료')}
+        </div>
+        """, unsafe_allow_html=True)
+    else:
+        st.warning(f"⚠️ {st.session_state.get('sheet_msg', '시트 저장 안 됨')}")
 
     st.markdown("""
     <div class="civic-success-badge">
