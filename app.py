@@ -444,6 +444,14 @@ st.markdown("""
         color: #1b2c32;
     }
 
+    .civic-next-partner {
+        display: block;
+        font-size: 13px;
+        font-weight: 600;
+        color: #2d4d6b;
+        margin-top: 4px;
+    }
+
     .civic-next-note {
         display: block;
         font-size: 11px;
@@ -622,18 +630,21 @@ SYSTEM_PROMPT = """너는 춘천시의회에서 20년 동안 근무한 '베테�
 
 ===PUBLIC_VIEW===
 (접수 직후 민원인 화면에 바로 보여 줄 안내. 아래 형식 그대로, 다른 말은 쓰지 않는다)
-담당부서: 아래 [춘천시 부서 목록]에서 이 민원을 맡는 부서 하나를 목록의 이름 그대로 (예: 교통과)
+담당부서: 아래 [부서 목록]에서 이 민원을 주로 맡는 부서 하나를 기관명까지 목록 그대로 (예: 춘천시 교통과)
+협조부서: 함께 확인이 필요한 다른 부서 하나를 기관명까지 목록 그대로, 없으면 "없음" (예: 강원특별자치도 도로관리사업소)
 진행: 첫 번째 진행 단계
 진행: 두 번째 진행 단계
 진행: 세 번째 진행 단계
 
 안내 작성 규칙:
-- 담당부서는 반드시 [춘천시 부서 목록]에 있는 이름만 쓴다. 목록에 없는 부서명을 지어내지 않는다.
-- 내부 보고서의 "관련 소관 부처"도 춘천시 업무라면 이 목록의 부서명을 쓴다.
+- 담당부서·협조부서는 반드시 [부서 목록]에 있는 이름만 쓴다. 목록에 없는 부서명을 지어내지 않는다.
+- 춘천 시민의 생활 민원은 대부분 춘천시 부서가 담당한다. 지방도·지방하천·도립시설·도 인허가·소방·자치경찰처럼 강원특별자치도 소관이면 강원특별자치도 부서를 담당부서로 쓴다.
+- 협조부서는 춘천시와 강원특별자치도가 함께 관여하는 등 실제로 협조가 필요할 때만 쓴다. 억지로 채우지 않는다.
+- 내부 보고서의 "관련 소관 부처"도 이 목록의 부서명을 쓴다.
 - 진행 단계는 의원실이 실제로 하는 일(내용 확인, 담당 부서에 사실 확인·조치 요청, 현장 확인 검토 등)을 이 민원에 맞게 한 문장씩, 존댓말(~합니다)로 쓴다.
 - 해결 여부, 일정, 결과를 약속하지 않는다. 연락·회신 이야기는 쓰지 않는다(따로 안내한다).
 
-[춘천시 부서 목록] (부서명: 주요 업무)
+[부서 목록] (기관 부서명: 주요 업무)
 """ + departments.guide_text()
 
 # ═══════════════════════════════════════════════════
@@ -767,16 +778,20 @@ def _section(raw: str, name: str) -> str:
 
 
 def _public_info(block: str) -> dict:
-    department, steps = "", []
+    department, partner, steps = "", "", []
     for line in block.replace("**", "").splitlines():
         line = line.strip().lstrip("-•· ").strip()
         if line.startswith("담당부서:"):
             department = departments.match(line.split(":", 1)[1])
+        elif line.startswith("협조부서:"):
+            partner = departments.match(line.split(":", 1)[1])
         elif line.startswith("진행:"):
             step = line.split(":", 1)[1].strip()
             if step:
                 steps.append(step)
-    return {"department": department, "steps": steps[:4] or DEFAULT_STEPS}
+    if partner == department:
+        partner = ""
+    return {"department": department, "partner": partner, "steps": steps[:4] or DEFAULT_STEPS}
 
 
 def analyze(name: str, contact: str, text: str) -> tuple[str, str, dict, str]:
@@ -867,6 +882,7 @@ if submitted:
         st.session_state.receipt = {
             "delivered": delivered,
             "department": public["department"],
+            "partner": public["partner"],
             "steps": public["steps"],
             "time": datetime.now().strftime('%Y-%m-%d %H:%M'),
             "has_contact": bool(연락처.strip()),
@@ -898,7 +914,9 @@ if receipt:
             '<div class="civic-next">'
             '<span class="civic-next-label">담당 부서</span>'
             f'<span class="civic-next-dept">{html.escape(department)}</span>'
-            '<span class="civic-next-note">처리 과정에서 협조 부서가 추가될 수 있습니다.</span>'
+            + (f'<span class="civic-next-partner">협조 부서: {html.escape(receipt["partner"])}</span>'
+               if receipt.get("partner") else "")
+            + '<span class="civic-next-note">처리 과정에서 협조 부서가 추가될 수 있습니다.</span>'
             '</div>'
             '<div class="civic-next">'
             '<span class="civic-next-label">앞으로 이렇게 진행됩니다</span>'
