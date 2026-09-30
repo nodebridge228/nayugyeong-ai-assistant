@@ -14,6 +14,7 @@ from datetime import datetime
 import streamlit as st
 from dotenv import load_dotenv
 import ai_engine
+import departments
 import telegram_sender
 import sheets_saver
 
@@ -621,16 +622,19 @@ SYSTEM_PROMPT = """너는 춘천시의회에서 20년 동안 근무한 '베테�
 
 ===PUBLIC_VIEW===
 (접수 직후 민원인 화면에 바로 보여 줄 안내. 아래 형식 그대로, 다른 말은 쓰지 않는다)
-담당부서: 이 민원을 맡을 가능성이 높은 춘천시(또는 관계기관) 부서 이름 하나
+담당부서: 아래 [춘천시 부서 목록]에서 이 민원을 맡는 부서 하나를 목록의 이름 그대로 (예: 교통과)
 진행: 첫 번째 진행 단계
 진행: 두 번째 진행 단계
 진행: 세 번째 진행 단계
 
 안내 작성 규칙:
-- 춘천시 조직의 정확한 부서명을 모르면 지어내지 말고 "춘천시 도로 관리 담당 부서"처럼 분야로 쓴다.
+- 담당부서는 반드시 [춘천시 부서 목록]에 있는 이름만 쓴다. 목록에 없는 부서명을 지어내지 않는다.
+- 내부 보고서의 "관련 소관 부처"도 춘천시 업무라면 이 목록의 부서명을 쓴다.
 - 진행 단계는 의원실이 실제로 하는 일(내용 확인, 담당 부서에 사실 확인·조치 요청, 현장 확인 검토 등)을 이 민원에 맞게 한 문장씩, 존댓말(~합니다)로 쓴다.
 - 해결 여부, 일정, 결과를 약속하지 않는다. 연락·회신 이야기는 쓰지 않는다(따로 안내한다).
-"""
+
+[춘천시 부서 목록] (부서명: 주요 업무)
+""" + departments.guide_text()
 
 # ═══════════════════════════════════════════════════
 # 5) 🎯 히어로 헤더
@@ -767,7 +771,7 @@ def _public_info(block: str) -> dict:
     for line in block.replace("**", "").splitlines():
         line = line.strip().lstrip("-•· ").strip()
         if line.startswith("담당부서:"):
-            department = line.split(":", 1)[1].strip()
+            department = departments.match(line.split(":", 1)[1])
         elif line.startswith("진행:"):
             step = line.split(":", 1)[1].strip()
             if step:
@@ -882,7 +886,7 @@ if receipt:
             if receipt["has_contact"]
             else "연락처를 남기지 않으셔서 따로 회신드리기는 어렵습니다. 소중한 의견은 의원실에서 꼭 확인하겠습니다."
         )
-        department = receipt.get("department") or "의원실에서 확인 후 결정됩니다"
+        department = receipt.get("department") or "의원실에서 확인한 뒤 안내드립니다"
         steps = "".join(f"<li>{html.escape(s)}</li>" for s in receipt.get("steps", []))
         st.markdown(
             '<div class="civic-success-badge civic-fade-in">'
@@ -892,9 +896,9 @@ if receipt:
             '<strong>민원이 의원실에 전달되었습니다</strong></div>'
             '</div>'
             '<div class="civic-next">'
-            '<span class="civic-next-label">예상 담당 부서</span>'
+            '<span class="civic-next-label">담당 부서</span>'
             f'<span class="civic-next-dept">{html.escape(department)}</span>'
-            '<span class="civic-next-note">AI가 민원 내용을 보고 추정한 부서이며, 의원실 확인 후 달라질 수 있습니다.</span>'
+            '<span class="civic-next-note">처리 과정에서 협조 부서가 추가될 수 있습니다.</span>'
             '</div>'
             '<div class="civic-next">'
             '<span class="civic-next-label">앞으로 이렇게 진행됩니다</span>'
