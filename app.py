@@ -7,6 +7,7 @@
 """
 import os
 import re
+import html
 import base64
 from pathlib import Path
 from datetime import datetime
@@ -418,6 +419,49 @@ st.markdown("""
         margin: 9px 0 0 48px;
     }
 
+    .civic-next {
+        margin: 16px 0 0 48px;
+        padding-top: 14px;
+        border-top: 1px solid #c7dbcc;
+    }
+
+    .civic-next + .civic-next { margin-top: 12px; }
+
+    .civic-next-label {
+        display: block;
+        font-size: 11px;
+        font-weight: 700;
+        letter-spacing: 0.08em;
+        color: #466d60;
+        margin-bottom: 6px;
+    }
+
+    .civic-next-dept {
+        display: block;
+        font-size: 15px;
+        font-weight: 700;
+        color: #1b2c32;
+    }
+
+    .civic-next-note {
+        display: block;
+        font-size: 11px;
+        color: #687976;
+        margin-top: 3px;
+    }
+
+    .civic-next ol {
+        margin: 4px 0 0 18px;
+        padding: 0;
+        font-size: 13px;
+        line-height: 1.85;
+        color: #1b2c32;
+    }
+
+    @media (max-width: 820px) {
+        .civic-next, .civic-success-badge p { margin-left: 0; }
+    }
+
     /* ── 텔레그램 상태 ── */
     .civic-telegram-ok {
         background: linear-gradient(135deg, #e8f4ec, #d4ecd9);
@@ -574,6 +618,18 @@ SYSTEM_PROMPT = """너는 춘천시의회에서 20년 동안 근무한 '베테�
 회신 초안 작성 규칙:
 - 해결 여부, 예산, 일정, 처리 결과를 약속하거나 단정하지 않는다.
 - 민원 내용에 없는 사실, 기관 답변, 수치를 지어내지 않는다.
+
+===PUBLIC_VIEW===
+(접수 직후 민원인 화면에 바로 보여 줄 안내. 아래 형식 그대로, 다른 말은 쓰지 않는다)
+담당부서: 이 민원을 맡을 가능성이 높은 춘천시(또는 관계기관) 부서 이름 하나
+진행: 첫 번째 진행 단계
+진행: 두 번째 진행 단계
+진행: 세 번째 진행 단계
+
+안내 작성 규칙:
+- 춘천시 조직의 정확한 부서명을 모르면 지어내지 말고 "춘천시 도로 관리 담당 부서"처럼 분야로 쓴다.
+- 진행 단계는 의원실이 실제로 하는 일(내용 확인, 담당 부서에 사실 확인·조치 요청, 현장 확인 검토 등)을 이 민원에 맞게 한 문장씩, 존댓말(~합니다)로 쓴다.
+- 해결 여부, 일정, 결과를 약속하지 않는다. 연락·회신 이야기는 쓰지 않는다(따로 안내한다).
 """
 
 # ═══════════════════════════════════════════════════
@@ -694,8 +750,33 @@ with st.form("민원_입력"):
 # ═══════════════════════════════════════════════════
 # 8) 분석 · 전달
 # ═══════════════════════════════════════════════════
-def analyze(name: str, contact: str, text: str) -> tuple[str, str, str]:
-    """(내부 보고서, 회신 초안, 사용 AI). AI가 실패해도 원문은 전달되도록 빈 값 대신 안내문을 돌려준다."""
+DEFAULT_STEPS = [
+    "의원실에서 접수된 민원 내용을 꼼꼼히 확인합니다.",
+    "필요한 경우 춘천시 담당 부서에 사실 확인과 조치를 요청합니다.",
+    "확인 결과에 따라 의원실에서 후속 활동을 이어 갑니다.",
+]
+
+
+def _section(raw: str, name: str) -> str:
+    m = re.search(rf"==={name}===(.*?)(?====[A-Z_]+===|\Z)", raw, re.DOTALL)
+    return m.group(1).strip() if m else ""
+
+
+def _public_info(block: str) -> dict:
+    department, steps = "", []
+    for line in block.replace("**", "").splitlines():
+        line = line.strip().lstrip("-•· ").strip()
+        if line.startswith("담당부서:"):
+            department = line.split(":", 1)[1].strip()
+        elif line.startswith("진행:"):
+            step = line.split(":", 1)[1].strip()
+            if step:
+                steps.append(step)
+    return {"department": department, "steps": steps[:4] or DEFAULT_STEPS}
+
+
+def analyze(name: str, contact: str, text: str) -> tuple[str, str, dict, str]:
+    """(내부 보고서, 회신 초안, 민원인 안내, 사용 AI). AI가 실패해도 원문은 전달되도록 빈 값 대신 안내문을 돌려준다."""
     user_prompt = f"""
 [민원인 정보]
 - 성함: {name or "(미입력)"}
@@ -708,18 +789,17 @@ def analyze(name: str, contact: str, text: str) -> tuple[str, str, str]:
         raw, engine = ai_engine.generate(SYSTEM_PROMPT, user_prompt)
     except Exception as e:
         print(f"[AI 분석 실패] {e}")
-        return "(AI 분석 실패 - 민원 원문을 직접 확인해 주세요)", "", "없음"
+        return "(AI 분석 실패 - 민원 원문을 직접 확인해 주세요)", "", _public_info(""), "없음"
 
-    staff_match = re.search(r"===STAFF_VIEW===(.*?)===CITIZEN_VIEW===", raw, re.DOTALL)
-    citizen_match = re.search(r"===CITIZEN_VIEW===(.*?)$", raw, re.DOTALL)
-    staff = staff_match.group(1).strip() if staff_match else raw
-    citizen = citizen_match.group(1).strip() if citizen_match else ""
-    return staff.replace("**", ""), citizen.replace("**", ""), engine
+    staff = _section(raw, "STAFF_VIEW") or raw
+    citizen = _section(raw, "CITIZEN_VIEW")
+    public = _public_info(_section(raw, "PUBLIC_VIEW"))
+    return staff.replace("**", ""), citizen.replace("**", ""), public, engine
 
 
-def deliver(name: str, contact: str, text: str) -> bool:
-    """의원실(텔레그램·시트)에 전달. 한 곳이라도 성공하면 True."""
-    staff, citizen, engine = analyze(name, contact, text)
+def deliver(name: str, contact: str, text: str) -> tuple[bool, dict]:
+    """의원실(텔레그램·시트)에 전달. (한 곳이라도 성공했는지, 민원인 안내)"""
+    staff, citizen, public, engine = analyze(name, contact, text)
     received_at = datetime.now().strftime('%Y-%m-%d %H:%M')
 
     report = f"""🌸 나유경 춘천시의원 AI 보좌관
@@ -761,7 +841,7 @@ def deliver(name: str, contact: str, text: str) -> bool:
     if not sheet_ok:
         print(f"[시트 저장 실패] {sheet_msg}")
 
-    return tg_ok or sheet_ok
+    return tg_ok or sheet_ok, public
 
 
 if submitted:
@@ -779,9 +859,11 @@ if submitted:
         st.warning(f"⚠️ 방금 접수하셨습니다. {int(wait) + 1}초 뒤에 다시 접수해 주세요.")
     else:
         with st.spinner("🌸 민원을 정리해 의원실로 전달하고 있습니다..."):
-            delivered = deliver(이름.strip(), 연락처.strip(), 민원_원문.strip())
+            delivered, public = deliver(이름.strip(), 연락처.strip(), 민원_원문.strip())
         st.session_state.receipt = {
             "delivered": delivered,
+            "department": public["department"],
+            "steps": public["steps"],
             "time": datetime.now().strftime('%Y-%m-%d %H:%M'),
             "has_contact": bool(연락처.strip()),
         }
@@ -800,18 +882,28 @@ if receipt:
             if receipt["has_contact"]
             else "연락처를 남기지 않으셔서 따로 회신드리기는 어렵습니다. 소중한 의견은 의원실에서 꼭 확인하겠습니다."
         )
-        st.markdown(f"""
-        <div class="civic-success-badge civic-fade-in">
-            <div class="civic-success-top">
-                <span class="civic-success-icon">✓</span>
-                <div>
-                    <span class="civic-success-caption">접수 시각 {receipt["time"]}</span>
-                    <strong>민원이 의원실에 전달되었습니다</strong>
-                </div>
-            </div>
-            <p>{follow_up}</p>
-        </div>
-        """, unsafe_allow_html=True)
+        department = receipt.get("department") or "의원실에서 확인 후 결정됩니다"
+        steps = "".join(f"<li>{html.escape(s)}</li>" for s in receipt.get("steps", []))
+        st.markdown(
+            '<div class="civic-success-badge civic-fade-in">'
+            '<div class="civic-success-top">'
+            '<span class="civic-success-icon">✓</span>'
+            f'<div><span class="civic-success-caption">접수 시각 {receipt["time"]}</span>'
+            '<strong>민원이 의원실에 전달되었습니다</strong></div>'
+            '</div>'
+            '<div class="civic-next">'
+            '<span class="civic-next-label">예상 담당 부서</span>'
+            f'<span class="civic-next-dept">{html.escape(department)}</span>'
+            '<span class="civic-next-note">AI가 민원 내용을 보고 추정한 부서이며, 의원실 확인 후 달라질 수 있습니다.</span>'
+            '</div>'
+            '<div class="civic-next">'
+            '<span class="civic-next-label">앞으로 이렇게 진행됩니다</span>'
+            f'<ol>{steps}</ol>'
+            '</div>'
+            f'<p>{follow_up}</p>'
+            '</div>',
+            unsafe_allow_html=True,
+        )
     else:
         st.error(
             "죄송합니다. 지금 민원이 의원실에 전달되지 않았습니다. "
