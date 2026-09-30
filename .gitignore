@@ -4,3 +4,4 @@ __pycache__/
 *.pyc
 streamlit_secrets_output.txt
 convert_key.py
+kakao_token.json

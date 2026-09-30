@@ -1,6 +1,7 @@
 streamlit
 requests
 python-dotenv
-google-generativeai
 gspread
 google-auth
+anthropic
+google-genai

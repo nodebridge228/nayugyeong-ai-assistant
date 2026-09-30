@@ -104,7 +104,7 @@ def save_to_sheet(
             "✅" if telegram_sent else "❌",
         ]
 
-        worksheet.append_row(row, value_input_option="USER_ENTERED")
+        worksheet.append_row(row, value_input_option="RAW")
         return True, "📊 스프레드시트 저장 완료"
 
     except Exception as e:

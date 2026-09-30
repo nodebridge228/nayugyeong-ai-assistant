@@ -1,7 +1,7 @@
 """
 🌸 나유경 춘천시의원 AI 보좌관 (v7)
 - 더불어민주당 파랑 + 의원님 사진
-- Gemini 3.8-flash + 텔레그램 자동 전송
+- Claude AI(예비: Gemini) + 텔레그램 자동 전송
 - Google Sheets 민원 이력 저장 ⭐ NEW
 - Civic Atelier 스타일
 """
@@ -11,8 +11,8 @@ import base64
 from pathlib import Path
 from datetime import datetime
 import streamlit as st
-import google.generativeai as genai
 from dotenv import load_dotenv
+import ai_engine
 import telegram_sender
 import sheets_saver
 
@@ -548,20 +548,7 @@ st.markdown("""
 # 3) 환경 설정
 # ═══════════════════════════════════════════════════
 load_dotenv()
-API_KEY = os.getenv("GEMINI_API_KEY", "").strip()
-
-# Streamlit Secrets도 시도
-if not API_KEY:
-    try:
-        API_KEY = st.secrets.get("GEMINI_API_KEY", "").strip()
-    except Exception:
-        pass
-
-if not API_KEY:
-    st.error("⚠️ GEMINI_API_KEY를 설정해주세요. (.env 또는 Streamlit Secrets)")
-    st.stop()
-
-genai.configure(api_key=API_KEY)
+COOLDOWN_SECONDS = 60
 
 # ═══════════════════════════════════════════════════
 # 4) AI 프롬프트
@@ -579,10 +566,14 @@ SYSTEM_PROMPT = """너는 춘천시의회에서 20년 동안 근무한 '베테�
 4. 의원실 대응 가이드라인
 
 ===CITIZEN_VIEW===
-(민원인에게 보여줄 안내문 - 정중한 존댓말, "안녕하십니까, 나유경 춘천시의원입니다"로 시작)
+(민원인 회신 초안 - 의원실이 검토·수정한 뒤 직접 보낸다. 정중한 존댓말, "안녕하십니까, 나유경 춘천시의원실입니다"로 시작)
 1. 접수 확인
 2. 민원 요약
-3. 향후 처리 계획
+3. 앞으로의 절차 (의원실에서 내용을 확인한 뒤 연락드린다는 수준으로만)
+
+회신 초안 작성 규칙:
+- 해결 여부, 예산, 일정, 처리 결과를 약속하거나 단정하지 않는다.
+- 민원 내용에 없는 사실, 기관 답변, 수치를 지어내지 않는다.
 """
 
 # ═══════════════════════════════════════════════════
@@ -685,168 +676,144 @@ with st.form("민원_입력"):
         height=200,
         placeholder="예: 어제 새벽 3시부터 공사 소음 때문에 잠을 못 잤습니다. 시청에 여러 번 항의했는데도 해결이 안 됩니다...",
     )
-    submitted = st.form_submit_button("🌸 민원 접수하기", use_container_width=True, type="primary")
+
+    with st.expander("개인정보 수집·이용 안내 (성함·연락처를 적으실 때 꼭 읽어 주세요)"):
+        st.markdown(
+            "- **수집 항목**: 성함, 연락처, 민원 내용\n"
+            "- **이용 목적**: 민원 확인 및 회신\n"
+            "- **보유 기간**: 민원 처리 완료 후 파기\n"
+            "- **처리 방식**: 민원 내용은 정리를 위해 AI 서비스(Anthropic Claude, Google Gemini)로 전송되며, "
+            "접수 내용은 의원실 텔레그램과 구글 스프레드시트에 기록됩니다.\n"
+            "- 동의하지 않으셔도 됩니다. 이 경우 성함·연락처 칸을 비우고 익명으로 접수해 주세요. "
+            "익명 접수는 회신이 어렵습니다."
+        )
+    동의 = st.checkbox("위 개인정보 수집·이용에 동의합니다. (성함·연락처를 적으신 경우 필수)")
+
+    submitted = st.form_submit_button("🌸 민원 접수하기", width="stretch", type="primary")
 
 # ═══════════════════════════════════════════════════
-# 8) 분석 실행
+# 8) 분석 · 전달
 # ═══════════════════════════════════════════════════
-if submitted:
-    if not 민원_원문.strip():
-        st.warning("⚠️ 민원 내용을 입력해주세요.")
-    else:
-        with st.spinner("🌸 AI 보좌관이 민원을 분석 중입니다..."):
-            try:
-                user_prompt = f"""
+def analyze(name: str, contact: str, text: str) -> tuple[str, str, str]:
+    """(내부 보고서, 회신 초안, 사용 AI). AI가 실패해도 원문은 전달되도록 빈 값 대신 안내문을 돌려준다."""
+    user_prompt = f"""
 [민원인 정보]
-- 성함: {이름 if 이름 else "(미입력)"}
-- 연락처: {연락처 if 연락처 else "(미입력)"}
+- 성함: {name or "(미입력)"}
+- 연락처: {contact or "(미입력)"}
 
 [민원 내용]
-{민원_원문}
+{text}
 """
-                model = genai.GenerativeModel(
-                    model_name="gemini-3.8-flash",
-                    system_instruction=SYSTEM_PROMPT,
-                )
-                response = model.generate_content(user_prompt)
-                raw = response.text
+    try:
+        raw, engine = ai_engine.generate(SYSTEM_PROMPT, user_prompt)
+    except Exception as e:
+        print(f"[AI 분석 실패] {e}")
+        return "(AI 분석 실패 - 민원 원문을 직접 확인해 주세요)", "", "없음"
 
-                staff_match = re.search(r"===STAFF_VIEW===(.*?)===CITIZEN_VIEW===", raw, re.DOTALL)
-                citizen_match = re.search(r"===CITIZEN_VIEW===(.*?)$", raw, re.DOTALL)
+    staff_match = re.search(r"===STAFF_VIEW===(.*?)===CITIZEN_VIEW===", raw, re.DOTALL)
+    citizen_match = re.search(r"===CITIZEN_VIEW===(.*?)$", raw, re.DOTALL)
+    staff = staff_match.group(1).strip() if staff_match else raw
+    citizen = citizen_match.group(1).strip() if citizen_match else ""
+    return staff.replace("**", ""), citizen.replace("**", ""), engine
 
-                staff = staff_match.group(1).strip() if staff_match else raw
-                citizen = citizen_match.group(1).strip() if citizen_match else raw
 
-                st.session_state.staff = staff
-                st.session_state.citizen = citizen
-                st.session_state.raw = raw
+def deliver(name: str, contact: str, text: str) -> bool:
+    """의원실(텔레그램·시트)에 전달. 한 곳이라도 성공하면 True."""
+    staff, citizen, engine = analyze(name, contact, text)
+    received_at = datetime.now().strftime('%Y-%m-%d %H:%M')
 
-                telegram_msg = f"""🌸 나유경 춘천시의원 AI 보좌관
+    report = f"""🌸 나유경 춘천시의원 AI 보좌관
 🔔 새 민원이 접수되었습니다
 
 ━━━━━━━━━━━━━━━━━━━━
-👤 민원인: {이름 if 이름 else "(미입력)"}
-📞 연락처: {연락처 if 연락처 else "(미입력)"}
+👤 민원인: {name or "(미입력)"}
+📞 연락처: {contact or "(미입력)"}
 ━━━━━━━━━━━━━━━━━━━━
 
 [민원 원문]
-{민원_원문[:500]}
+{text[:1500]}
 
 ━━━━━━━━━━━━━━━━━━━━
-[내부 보고서]
+[내부 보고서] (작성 AI: {engine})
 {staff}
 
 ━━━━━━━━━━━━━━━━━━━━
-⏰ 접수 시각: {datetime.now().strftime('%Y-%m-%d %H:%M')}
+⏰ 접수 시각: {received_at}
 """
-                # ─── 텔레그램 전송 ───
-                ok, tg_msg = telegram_sender.send_to_me(telegram_msg)
-
-                st.session_state.telegram_sent = ok
-                st.session_state.telegram_msg = "📱 의원님께 텔레그램 전송 완료!" if ok else tg_msg
-
-                # ─── 📊 Google Sheets 저장 ───
-                try:
-                    sheet_ok, sheet_msg = sheets_saver.save_to_sheet(
-                        name=이름,
-                        contact=연락처,
-                        content=민원_원문,
-                        staff_report=staff,
-                        telegram_sent=ok,
-                    )
-                    st.session_state.sheet_sent = sheet_ok
-                    st.session_state.sheet_msg = sheet_msg
-                except Exception as sheet_e:
-                    st.session_state.sheet_sent = False
-                    st.session_state.sheet_msg = f"시트 저장 실패: {sheet_e}"
-
-            except Exception as e:
-                st.error(f"❌ 분석 실패: {e}")
-                st.exception(e)
-
-# ═══════════════════════════════════════════════════
-# 9) 결과 표시
-# ═══════════════════════════════════════════════════
-if "citizen" in st.session_state:
-    st.markdown("---")
-    st.markdown("""
-    <div class="civic-section-head">
-        <div>
-            <p class="civic-kicker">02 — A THOUGHTFUL RESPONSE</p>
-            <h2>확인부터 다음 단계까지,<br><span class="soft">정성스럽게 안내합니다.</span></h2>
-        </div>
-    </div>
-    """, unsafe_allow_html=True)
-
-    # 텔레그램 상태
-    if st.session_state.get("telegram_sent"):
-        st.markdown(f"""
-        <div class="civic-telegram-ok">
-            {st.session_state.get('telegram_msg', '텔레그램 전송 완료!')}
-        </div>
-        """, unsafe_allow_html=True)
-    else:
-        st.warning(f"⚠️ {st.session_state.get('telegram_msg', '전송 실패')}")
-
-    # 스프레드시트 저장 상태 (NEW)
-    if st.session_state.get("sheet_sent"):
-        st.markdown(f"""
-        <div class="civic-sheet-ok">
-            📊 {st.session_state.get('sheet_msg', '스프레드시트 저장 완료')}
-        </div>
-        """, unsafe_allow_html=True)
-    else:
-        st.warning(f"⚠️ {st.session_state.get('sheet_msg', '시트 저장 안 됨')}")
-
-    st.markdown("""
-    <div class="civic-success-badge">
-        <div class="civic-success-top">
-            <span class="civic-success-icon">✓</span>
-            <div>
-                <span class="civic-success-caption">민원이 정상적으로 접수되었습니다</span>
-                <strong>접수 완료 안내</strong>
-            </div>
-        </div>
-        <p>아래 내용은 담당자에게 전달되었습니다.<br>의원실에서 확인 후 연락드리겠습니다.</p>
-    </div>
-    """, unsafe_allow_html=True)
-
-    tab1, tab2, tab3 = st.tabs([
-        "📄 의원실 내부 보고서",
-        "💬 시민 전송용 문자",
-        "🔎 AI 원본 출력",
-    ])
-
-    with tab1:
-        st.markdown("#### 🔒 내부 보고 (외부 유출 금지)")
-        st.markdown(st.session_state.staff)
-
-    with tab2:
-        st.markdown("""
-        <div class="civic-letter">
-            <div class="civic-letter-head">
-                <p class="civic-letter-eyebrow">A LETTER FROM THE OFFICE</p>
-                <h3>🌸 나유경 춘천시의원실 안내문</h3>
-            </div>
-        """, unsafe_allow_html=True)
-
-        st.markdown(st.session_state.citizen)
-
-        st.markdown("""
-            <div class="civic-letter-signature">
-                <small>춘천시의원</small>
-                <strong>나유경</strong>
-            </div>
-        </div>
-        """, unsafe_allow_html=True)
-
-        st.text_area(
-            "📋 복사용 텍스트",
-            value=st.session_state.citizen,
-            height=150,
-            key="citizen_copy",
+    tg_ok, tg_msg = telegram_sender.send_to_me(report)
+    if not tg_ok:
+        print(f"[텔레그램 전송 실패] {tg_msg}")
+    elif citizen:
+        telegram_sender.send_to_me(
+            "✉️ 민원인 회신 초안 (검토·수정 후 직접 보내 주세요. 자동 발송되지 않았습니다)\n\n" + citizen
         )
 
-    with tab3:
-        with st.expander("AI 원본 텍스트 보기"):
-            st.text(st.session_state.raw)
+    try:
+        sheet_ok, sheet_msg = sheets_saver.save_to_sheet(
+            name=name,
+            contact=contact,
+            content=text,
+            staff_report=staff,
+            telegram_sent=tg_ok,
+        )
+    except Exception as e:
+        sheet_ok, sheet_msg = False, str(e)
+    if not sheet_ok:
+        print(f"[시트 저장 실패] {sheet_msg}")
+
+    return tg_ok or sheet_ok
+
+
+if submitted:
+    last = st.session_state.get("last_submit_at")
+    wait = COOLDOWN_SECONDS - (datetime.now() - last).total_seconds() if last else 0
+
+    if not 민원_원문.strip():
+        st.warning("⚠️ 민원 내용을 입력해주세요.")
+    elif (이름.strip() or 연락처.strip()) and not 동의:
+        st.warning(
+            "⚠️ 성함이나 연락처를 적으셨다면 개인정보 수집·이용에 동의해 주세요. "
+            "동의하지 않으시면 성함·연락처 칸을 비우고 익명으로 접수하실 수 있습니다."
+        )
+    elif wait > 0:
+        st.warning(f"⚠️ 방금 접수하셨습니다. {int(wait) + 1}초 뒤에 다시 접수해 주세요.")
+    else:
+        with st.spinner("🌸 민원을 정리해 의원실로 전달하고 있습니다..."):
+            delivered = deliver(이름.strip(), 연락처.strip(), 민원_원문.strip())
+        st.session_state.receipt = {
+            "delivered": delivered,
+            "time": datetime.now().strftime('%Y-%m-%d %H:%M'),
+            "has_contact": bool(연락처.strip()),
+        }
+        if delivered:
+            st.session_state.last_submit_at = datetime.now()
+
+# ═══════════════════════════════════════════════════
+# 9) 접수 결과 (민원인에게는 접수 여부만 보여 준다)
+# ═══════════════════════════════════════════════════
+receipt = st.session_state.get("receipt")
+if receipt:
+    st.markdown("---")
+    if receipt["delivered"]:
+        follow_up = (
+            "의원실에서 내용을 확인한 뒤 남겨 주신 연락처로 연락드리겠습니다."
+            if receipt["has_contact"]
+            else "연락처를 남기지 않으셔서 따로 회신드리기는 어렵습니다. 소중한 의견은 의원실에서 꼭 확인하겠습니다."
+        )
+        st.markdown(f"""
+        <div class="civic-success-badge civic-fade-in">
+            <div class="civic-success-top">
+                <span class="civic-success-icon">✓</span>
+                <div>
+                    <span class="civic-success-caption">접수 시각 {receipt["time"]}</span>
+                    <strong>민원이 의원실에 전달되었습니다</strong>
+                </div>
+            </div>
+            <p>{follow_up}</p>
+        </div>
+        """, unsafe_allow_html=True)
+    else:
+        st.error(
+            "죄송합니다. 지금 민원이 의원실에 전달되지 않았습니다. "
+            "입력하신 내용은 그대로 남아 있으니 잠시 뒤 다시 접수해 주세요."
+        )
